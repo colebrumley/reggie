@@ -13,7 +13,7 @@ import platform
 import base64
 from pprint import pprint
 
-# ARGS =--------------------------------
+# ARGS
 parser = argparse.ArgumentParser(description='Update Consul catalog with Docker containers')
 
 parser.add_argument(
