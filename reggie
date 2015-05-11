@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+
+import docker
+import httplib2
+import json
+import socket
+import fcntl
+import struct
+import argparse
+import datetime
+import logging
+import platform
+import base64
+from pprint import pprint
+
+# ARGS =--------------------------------
+parser = argparse.ArgumentParser(description='Update Consul catalog with Docker containers')
+
+parser.add_argument(
+    '-i',
+    dest='bind_if',
+    metavar='ifname',
+    action='store',
+    default="wlan0",
+    help='Network interface'
+)
+parser.add_argument(
+    '-c',
+    dest='consul_host',
+    metavar='host:port',
+    action='store',
+    default="localhost:8500",
+    help='Consul endpoint'
+)
+parser.add_argument(
+    '-d',
+    dest='docker_url',
+    metavar='endpoint',
+    action='store',
+    default="unix://var/run/docker.sock",
+    help='Docker endpoint'
+)
+
+parser.add_argument(
+    '--use-docker-ip',
+    dest='use_docker',
+    action='store_true',
+    default=False,
+    help='Use Docker IP for service registration'
+)
+
+try:
+    args = parser.parse_args()
+except Exception, e:
+    logger("[ERROR]", e)
+    raise e
+
+# LOGGING
+logger = logging.getLogger('reggie')
+logger.setLevel(logging.DEBUG)
+
+# create console handler
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+# create formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+
+# add the handlers to the logger
+logger.addHandler(ch)
+
+def main():
+    try:
+        c = docker.Client(base_url=args.docker_url, version="1.17")
+    except Exception, e:
+        logger.error("[ERROR]", e)
+        raise e
+
+    try:
+        bootstrap_consul(c)
+        docker_watch(c)
+    except:
+        pass
+
+    logger.warning("Exiting...")
+    bootstrap_consul(c)
+    return 0
+
+def bootstrap_consul(docker_client):
+    logger.info("Bootstrapping KV backup...")
+    api_target = "http://" + args.consul_host + "/v1/kv/reggie/" + platform.node()
+
+    # Create the Consul KV dict
+    kv_new = {
+        "Host": platform.node(),
+        "Containers": []
+    }
+
+    # Get current running containers
+    conts = docker_client.containers(filters={"status": "running"})
+    
+    # Add current running containers to new list
+    for c in conts:
+        kv_new['Containers'].append(c['Id'][:12])
+
+    update_kv(docker_client, api_target, kv_new)
+    logger.info("Completed bootstrapping")
+
+# Update KV Store backup
+def update_kv(docker_client, api_target, kv_data):
+    # Get existing bootstrap info
+    http = httplib2.Http()
+    r_get, get_content = http.request(
+        uri=api_target,
+        method='GET'
+    )
+    if r_get.status != 404:
+        # Remove any stale container service records if the key exists
+        kv_current = json.loads(get_content)
+        decoded = json.loads(base64.b64decode(kv_current[0]['Value']))
+        for cid in decoded['Containers']:
+            if cid not in kv_data['Containers']:
+                logger.info("Removing stale container record: " + cid)
+                consul_remove(cid)
+
+    # Reset the currently running containers
+    r_del, _ = http.request(
+            uri=api_target,
+            method="DELETE"
+    )
+    r_put, content = http.request(
+            uri=api_target,
+            method="PUT",
+            headers={"Content-type": "application/json"},
+            body=json.dumps(kv_data)
+    )
+
+    if r_put.status != 200:
+        logger.error(r_put['Value'])
+
+    # Update currently running containers
+    for cid in kv_data['Containers']:
+        container_service(docker_client, cid)
+
+# Extracts the service config from a container
+def container_service(client, container):
+    service = ""
+    port = None
+    cont_info = client.inspect_container(container)
+    for env in cont_info['Config']['Env']:
+        if env.startswith("SERVICE_NAME"):
+            service = env.split("=")[1].strip()
+            logger.info("Found service " + service + " on container " + cont_info['Id'][:12])
+        elif env.startswith("SERVICE_PORT"):
+            try:
+                port = int(env.split("=")[1].strip())
+            except:
+                pass
+
+    if len(service) > 0:
+        if not port:
+            port = 0
+        logger.info("Updating service " + service + " on port " + str(port) + " for container ID " + cont_info['Id'][:12])
+        my_ip = get_ip_address(args.bind_if)
+
+        if args.use_docker:
+            my_ip = cont_info['NetworkSettings']['IPAddress']
+            
+        this_service = {
+            "Node": cont_info['Id'][:12],
+            "Address": my_ip,
+            "Tags": ["docker"],
+            "Service": {
+                "Service": service,
+                "Port": port
+            }}
+        consul_add(this_service, 'localhost:8500')
+    else:
+        logger.info("Not registering " + cont_info['Config']['Hostname'])
+
+# Watches for Docker events and adds or
+# removes services from Consul as needed
+def docker_watch(client):
+    events = client.events(since=datetime.datetime.now().time())
+    logger.info("watching for container events...")
+    for e in events :
+        event = json.loads(e)
+        #logger.debug("Received event " + str(event))
+        if event['status'] == "start":
+            logger.info("Received start event from Docker daemon")
+            container_service(client, event['id'])
+        elif event['status'] == "die" or event['status'] == "kill":
+            logger.info("Received stop event from Docker daemon")
+            consul_remove(event['id'][:12])
+        else:
+            pass
+
+# Removes a container service from Consul
+def consul_remove(container):
+    req = {"Node": container}
+    http = httplib2.Http()
+    response, content = http.request(
+        uri='http://' + args.consul_host + '/v1/catalog/deregister',
+        method='PUT',
+        headers={"Content-type": "application/json"},
+        body=json.dumps(req)
+    )
+    if response.status == 200:
+        logger.info("Removed service provided by " + container[:12])
+    else:
+        logger.error("Error removing " + container[:12] + ": " + str(response.status) + " " + response.reason)
+
+# Adds a container service to Consul
+def consul_add(service, consul_host):
+    http = httplib2.Http()
+    response, content = http.request(
+        uri='http://' + consul_host + '/v1/catalog/register',
+        method='PUT',
+        headers={"Content-type": "application/json"},
+        body=json.dumps(service)
+    )
+    if response.status == 200:
+        logger.info("Successfully added " + service['Service']['Service'] + " on " + service['Node'] + " to Consul")
+    else:
+        logger.error("Failed to add " + service['Service']['Service'] + " on " + service['Node'] + " to Consul: " + str(response.status) + " " + response.reason)
+
+# Gets the host's default IP for the given ifname
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,  # SIOCGIFADDR
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+
+if __name__ == '__main__':
+    main()
