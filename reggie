@@ -3,9 +3,6 @@
 import docker
 import httplib2
 import json
-import socket
-import fcntl
-import struct
 import argparse
 import datetime
 import logging
@@ -19,11 +16,10 @@ parser = argparse.ArgumentParser(
 )
 
 parser.add_argument(
-    '-i',
+    '-b',
     dest='bind_if',
-    metavar='ifname',
+    metavar='ipaddr',
     action='store',
-    default="wlan0",
     help='Network interface'
 )
 parser.add_argument(
@@ -173,10 +169,11 @@ def container_service(client, container):
             port = 0
         logger.info("Updating service " + service + " on port " +
                     str(port) + " for container ID " + cont_info['Id'][:12])
-        my_ip = get_ip_address(args.bind_if)
 
         if args.use_docker:
             my_ip = cont_info['NetworkSettings']['IPAddress']
+        else:
+            my_ip = args.bind_if
 
         this_service = {
             "Node": cont_info['Id'][:12],
@@ -243,15 +240,6 @@ def consul_add(service, consul_host):
                      " on " + service['Node'] + " to Consul: " +
                      str(response.status) + " " + response.reason)
 
-
-# Gets the host's default IP for the given ifname
-def get_ip_address(ifname):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    return socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(),
-        0x8915,  # SIOCGIFADDR
-        struct.pack('256s', ifname[:15])
-    )[20:24])
 
 if __name__ == '__main__':
     main()
