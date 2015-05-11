@@ -20,7 +20,7 @@ parser.add_argument(
     dest='bind_if',
     metavar='ipaddr',
     action='store',
-    help='Network interface'
+    help='Host bind IP for service registration'
 )
 parser.add_argument(
     '-c',
@@ -28,7 +28,7 @@ parser.add_argument(
     metavar='host:port',
     action='store',
     default="localhost:8500",
-    help='Consul endpoint'
+    help='Consul endpoint (Default: localhost:8500)'
 )
 parser.add_argument(
     '-d',
@@ -36,7 +36,7 @@ parser.add_argument(
     metavar='endpoint',
     action='store',
     default="unix://var/run/docker.sock",
-    help='Docker endpoint'
+    help='Docker endpoint (Default: unix://var/run/docker.sock)'
 )
 
 parser.add_argument(
