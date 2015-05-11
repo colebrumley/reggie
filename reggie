@@ -14,7 +14,9 @@ import base64
 from pprint import pprint
 
 # ARGS
-parser = argparse.ArgumentParser(description='Update Consul catalog with Docker containers')
+parser = argparse.ArgumentParser(
+    description='Update Consul catalog with Docker containers'
+)
 
 parser.add_argument(
     '-i',
@@ -64,11 +66,14 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 
 # create formatter and add it to the handlers
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 ch.setFormatter(formatter)
 
 # add the handlers to the logger
 logger.addHandler(ch)
+
 
 def main():
     try:
@@ -87,9 +92,11 @@ def main():
     bootstrap_consul(c)
     return 0
 
+
 def bootstrap_consul(docker_client):
     logger.info("Bootstrapping KV backup...")
-    api_target = "http://" + args.consul_host + "/v1/kv/reggie/" + platform.node()
+    api_target = "http://" + args.consul_host + \
+        "/v1/kv/reggie/" + platform.node()
 
     # Create the Consul KV dict
     kv_new = {
@@ -99,13 +106,14 @@ def bootstrap_consul(docker_client):
 
     # Get current running containers
     conts = docker_client.containers(filters={"status": "running"})
-    
+
     # Add current running containers to new list
     for c in conts:
         kv_new['Containers'].append(c['Id'][:12])
 
     update_kv(docker_client, api_target, kv_new)
     logger.info("Completed bootstrapping")
+
 
 # Update KV Store backup
 def update_kv(docker_client, api_target, kv_data):
@@ -126,14 +134,14 @@ def update_kv(docker_client, api_target, kv_data):
 
     # Reset the currently running containers
     r_del, _ = http.request(
-            uri=api_target,
-            method="DELETE"
+        uri=api_target,
+        method="DELETE"
     )
     r_put, content = http.request(
-            uri=api_target,
-            method="PUT",
-            headers={"Content-type": "application/json"},
-            body=json.dumps(kv_data)
+        uri=api_target,
+        method="PUT",
+        headers={"Content-type": "application/json"},
+        body=json.dumps(kv_data)
     )
 
     if r_put.status != 200:
@@ -143,6 +151,7 @@ def update_kv(docker_client, api_target, kv_data):
     for cid in kv_data['Containers']:
         container_service(docker_client, cid)
 
+
 # Extracts the service config from a container
 def container_service(client, container):
     service = ""
@@ -151,7 +160,8 @@ def container_service(client, container):
     for env in cont_info['Config']['Env']:
         if env.startswith("SERVICE_NAME"):
             service = env.split("=")[1].strip()
-            logger.info("Found service " + service + " on container " + cont_info['Id'][:12])
+            logger.info("Found service " + service +
+                        " on container " + cont_info['Id'][:12])
         elif env.startswith("SERVICE_PORT"):
             try:
                 port = int(env.split("=")[1].strip())
@@ -161,12 +171,13 @@ def container_service(client, container):
     if len(service) > 0:
         if not port:
             port = 0
-        logger.info("Updating service " + service + " on port " + str(port) + " for container ID " + cont_info['Id'][:12])
+        logger.info("Updating service " + service + " on port " +
+                    str(port) + " for container ID " + cont_info['Id'][:12])
         my_ip = get_ip_address(args.bind_if)
 
         if args.use_docker:
             my_ip = cont_info['NetworkSettings']['IPAddress']
-            
+
         this_service = {
             "Node": cont_info['Id'][:12],
             "Address": my_ip,
@@ -179,12 +190,13 @@ def container_service(client, container):
     else:
         logger.info("Not registering " + cont_info['Config']['Hostname'])
 
+
 # Watches for Docker events and adds or
 # removes services from Consul as needed
 def docker_watch(client):
     events = client.events(since=datetime.datetime.now().time())
     logger.info("watching for container events...")
-    for e in events :
+    for e in events:
         event = json.loads(e)
         #logger.debug("Received event " + str(event))
         if event['status'] == "start":
@@ -195,6 +207,7 @@ def docker_watch(client):
             consul_remove(event['id'][:12])
         else:
             pass
+
 
 # Removes a container service from Consul
 def consul_remove(container):
@@ -209,7 +222,9 @@ def consul_remove(container):
     if response.status == 200:
         logger.info("Removed service provided by " + container[:12])
     else:
-        logger.error("Error removing " + container[:12] + ": " + str(response.status) + " " + response.reason)
+        logger.error("Error removing " + container[:12] + ": " +
+                     str(response.status) + " " + response.reason)
+
 
 # Adds a container service to Consul
 def consul_add(service, consul_host):
@@ -221,9 +236,13 @@ def consul_add(service, consul_host):
         body=json.dumps(service)
     )
     if response.status == 200:
-        logger.info("Successfully added " + service['Service']['Service'] + " on " + service['Node'] + " to Consul")
+        logger.info("Successfully added " + service['Service']['Service'] +
+                    " on " + service['Node'] + " to Consul")
     else:
-        logger.error("Failed to add " + service['Service']['Service'] + " on " + service['Node'] + " to Consul: " + str(response.status) + " " + response.reason)
+        logger.error("Failed to add " + service['Service']['Service'] +
+                     " on " + service['Node'] + " to Consul: " +
+                     str(response.status) + " " + response.reason)
+
 
 # Gets the host's default IP for the given ifname
 def get_ip_address(ifname):
